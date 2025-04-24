@@ -60,6 +60,21 @@ impl StateStore {
         }
     }
 
+    /// Merges the contents of another StateStore into this one.
+    /// This appends all CFRStates and TraversalStates from `other` into `self`.
+    pub fn merge_from(&mut self, other: &StateStore) {
+        let mut self_inner = self.inner.borrow_mut();
+        let other_inner = other.inner.borrow();
+
+        for state in &other_inner.cfr_states {
+            self_inner.cfr_states.push(state.clone());
+        }
+
+        for traversal in &other_inner.traversal_states {
+            self_inner.traversal_states.push(traversal.clone());
+        }
+    }
+
     pub fn save_to_file(&self, path: &Path) -> Result<()> {
         let serialized = serde_json::to_string(self)?;
         fs::write(path, serialized)?;
