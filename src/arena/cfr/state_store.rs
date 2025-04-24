@@ -1,10 +1,13 @@
+use std::fs;
+use std::path::Path;
 use std::rc::Rc;
-
+use serde::{Deserialize, Serialize, Serializer, Deserializer};
 use crate::arena::GameState;
+use anyhow::Result;
 
 use super::{CFRState, TraversalState};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct StateStoreInternal {
     // The tree structure of counter factual regret.
     pub cfr_states: Vec<CFRState>,
@@ -23,6 +26,30 @@ pub struct StateStore {
     inner: Rc<std::cell::RefCell<StateStoreInternal>>,
 }
 
+// Custom Serialize implementation for StateStore
+impl Serialize for StateStore {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let internal = self.inner.borrow();
+        internal.serialize(serializer)
+    }
+}
+
+// Custom Deserialize implementation for StateStore
+impl<'de> Deserialize<'de> for StateStore {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let internal = StateStoreInternal::deserialize(deserializer)?;
+        Ok(StateStore {
+            inner: Rc::new(std::cell::RefCell::new(internal)),
+        })
+    }
+}
+
 impl StateStore {
     pub fn new() -> Self {
         StateStore {
@@ -33,6 +60,16 @@ impl StateStore {
         }
     }
 
+    pub fn save_to_file(&self, path: &Path) -> Result<()> {
+        let serialized = serde_json::to_string(self)?;
+        fs::write(path, serialized)?;
+        Ok(())
+    }
+
+    pub fn load_from_file(path: &Path) -> Result<Self> {
+        let contents = fs::read_to_string(path)?;
+        Ok(serde_json::from_str(&contents)?)
+    }
     pub fn len(&self) -> usize {
         self.inner.borrow().cfr_states.len()
     }
@@ -147,6 +184,8 @@ impl Default for StateStore {
 mod tests {
 
     use super::*;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn test_new() {
@@ -211,5 +250,29 @@ mod tests {
         for i in 0..2 {
             state_store.pop_traversal(i);
         }
+    }
+    
+    #[test]
+    fn test_save_load_file() -> Result<()> {
+        let dir = tempdir()?;
+        let file_path = dir.path().join("state_store.json");
+        
+        // Create state store with some data
+        let mut state_store = StateStore::new();
+        let game_state = GameState::new_starting(vec![100.0; 3], 10.0, 5.0, 0.0, 0);
+        let (_state, _traversal) = state_store.new_state(game_state.clone(), 0);
+        let (_state2, _traversal2) = state_store.new_state(game_state.clone(), 1);
+        
+        // Save to file
+        state_store.save_to_file(&file_path)?;
+        
+        // Load from file
+        let loaded_store = StateStore::load_from_file(&file_path)?;
+        
+        // Verify loaded store has the same number of states
+        assert_eq!(loaded_store.len(), state_store.len(), 
+            "Loaded state store should have the same number of states");
+        
+        Ok(())
     }
 }

@@ -2,6 +2,7 @@ use std::{
     cell::{Ref, RefCell, RefMut},
     rc::Rc,
 };
+use serde::{Deserialize, Serialize, Serializer, Deserializer};
 
 use crate::arena::GameState;
 
@@ -18,7 +19,7 @@ use super::{Node, NodeData};
 /// 2. It provides better memory locality since nodes are stored contiguously
 /// 3. It makes serialization/deserialization simpler since we just need to
 ///    store indices rather than reconstruct pointer relationships
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CFRStateInternal {
     /// Vector storing all nodes in the game tree. Nodes reference each other
     /// using their indices into this vector rather than direct pointers.
@@ -57,6 +58,30 @@ pub struct CFRStateInternal {
 #[derive(Debug, Clone)]
 pub struct CFRState {
     inner_state: Rc<RefCell<CFRStateInternal>>,
+}
+
+// Custom Serialize implementation for CFRState
+impl Serialize for CFRState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let internal = self.inner_state.borrow();
+        internal.serialize(serializer)
+    }
+}
+
+// Custom Deserialize implementation for CFRState
+impl<'de> Deserialize<'de> for CFRState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let internal = CFRStateInternal::deserialize(deserializer)?;
+        Ok(CFRState {
+            inner_state: Rc::new(RefCell::new(internal)),
+        })
+    }
 }
 
 impl CFRState {
@@ -114,7 +139,7 @@ impl CFRState {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct TraversalStateInternal {
     // What node are we at
     pub node_idx: usize,
@@ -136,6 +161,30 @@ pub struct TraversalStateInternal {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraversalState {
     inner_state: Rc<RefCell<TraversalStateInternal>>,
+}
+
+// Custom Serialize implementation for TraversalState
+impl Serialize for TraversalState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let internal = self.inner_state.borrow();
+        internal.serialize(serializer)
+    }
+}
+
+// Custom Deserialize implementation for TraversalState
+impl<'de> Deserialize<'de> for TraversalState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let internal = TraversalStateInternal::deserialize(deserializer)?;
+        Ok(TraversalState {
+            inner_state: Rc::new(RefCell::new(internal)),
+        })
+    }
 }
 
 impl TraversalState {
@@ -178,6 +227,7 @@ mod tests {
     use crate::arena::GameState;
 
     use super::CFRState;
+    use serde_json;
 
     #[test]
     fn test_add_get_node() {
@@ -238,5 +288,41 @@ mod tests {
         // Cloned should have the same values
         assert_eq!(cloned.node_idx(), 2);
         assert_eq!(cloned.chosen_child_idx(), 42);
+    }
+
+    #[test]
+    fn test_cfr_state_serialization() {
+        let game_state = GameState::new_starting(vec![100.0; 3], 10.0, 5.0, 0.0, 0);
+        let cfr_state = CFRState::new(game_state.clone());
+        
+        // Serialize to JSON
+        let json = serde_json::to_string(&cfr_state).expect("Failed to serialize CFRState");
+        
+        // Deserialize from JSON
+        let deserialized_state: CFRState = serde_json::from_str(&json).expect("Failed to deserialize CFRState");
+        
+        // Check that the deserialized state has the root node
+        let root_node = deserialized_state.get(0).expect("No root node found");
+        assert!(matches!(root_node.data, NodeData::Root), "Root node data should be NodeData::Root");
+        
+        // Check that the starting game state was properly serialized
+        assert_eq!(deserialized_state.starting_game_state().big_blind, 10.0);
+        assert_eq!(deserialized_state.starting_game_state().small_blind, 5.0);
+    }
+    
+    #[test]
+    fn test_traversal_state_serialization() {
+        let traversal = TraversalState::new(42, 7, 3);
+        
+        // Serialize to JSON
+        let json = serde_json::to_string(&traversal).expect("Failed to serialize TraversalState");
+        
+        // Deserialize from JSON
+        let deserialized_traversal: TraversalState = serde_json::from_str(&json).expect("Failed to deserialize TraversalState");
+        
+        // Check that the properties were preserved
+        assert_eq!(deserialized_traversal.node_idx(), 42);
+        assert_eq!(deserialized_traversal.chosen_child_idx(), 7);
+        assert_eq!(deserialized_traversal.player_idx(), 3);
     }
 }

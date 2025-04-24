@@ -2,6 +2,7 @@ use core::fmt;
 use std::fmt::Display;
 
 use rand::{Rng, rng};
+use serde::{Deserialize, Serialize};
 
 use crate::core::{Card, Hand, PlayerBitSet};
 
@@ -76,7 +77,7 @@ impl Round {
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct RoundData {
     // Which players were active starting this round.
     pub starting_player_active: PlayerBitSet,
@@ -211,7 +212,7 @@ impl RoundData {
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct GameState {
     /// The number of players that started
     pub num_players: usize,

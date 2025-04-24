@@ -1,10 +1,49 @@
+use serde::{Deserialize, Serialize, Serializer, Deserializer};
+use serde::ser::SerializeStruct;
+use serde::de;
+
 #[derive(Debug, Clone)]
 pub struct PlayerData {
     pub regret_matcher: Option<Box<little_sorry::RegretMatcher>>,
     pub player_idx: usize,
 }
 
-#[derive(Debug, Clone)]
+// Custom Serialize for PlayerData to handle RegretMatcher
+impl Serialize for PlayerData {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("PlayerData", 2)?;
+        // Skip RegretMatcher serialization for now (will need to be recreated)
+        state.serialize_field("regret_matcher", &None::<()>)?;
+        state.serialize_field("player_idx", &self.player_idx)?;
+        state.end()
+    }
+}
+
+// Custom Deserialize for PlayerData to handle RegretMatcher
+impl<'de> Deserialize<'de> for PlayerData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct PlayerDataHelper {
+            #[serde(default)]
+            regret_matcher: Option<()>,
+            player_idx: usize,
+        }
+
+        let helper = PlayerDataHelper::deserialize(deserializer)?;
+        Ok(PlayerData {
+            regret_matcher: None, // We recreate this as needed
+            player_idx: helper.player_idx,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalData {
     pub total_utility: f32,
 }
@@ -22,7 +61,7 @@ impl Default for TerminalData {
 }
 
 // The base node type for Poker CFR
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NodeData {
     /// The root node.
     ///
@@ -93,6 +132,69 @@ pub struct Node {
     // get contiguous memory for no pointer chasing.
     children: [Option<usize>; 52],
     count: [u32; 52],
+}
+
+// Custom Serialize for Node to handle the arrays
+impl Serialize for Node {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Node", 6)?;
+        state.serialize_field("idx", &self.idx)?;
+        state.serialize_field("data", &self.data)?;
+        state.serialize_field("parent", &self.parent)?;
+        state.serialize_field("parent_child_idx", &self.parent_child_idx)?;
+
+        // Convert fixed arrays to Vec for serialization
+        let children_vec: Vec<Option<usize>> = self.children.to_vec();
+        let count_vec: Vec<u32> = self.count.to_vec();
+        
+        state.serialize_field("children", &children_vec)?;
+        state.serialize_field("count", &count_vec)?;
+        state.end()
+    }
+}
+
+// Custom Deserialize for Node to handle the arrays
+impl<'de> Deserialize<'de> for Node {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct NodeHelper {
+            idx: usize,
+            data: NodeData,
+            parent: Option<usize>,
+            parent_child_idx: Option<usize>,
+            children: Vec<Option<usize>>,
+            count: Vec<u32>,
+        }
+
+        let helper = NodeHelper::deserialize(deserializer)?;
+        
+        // Convert Vec back to fixed arrays
+        let mut children = [None; 52];
+        let mut count = [0; 52];
+        
+        for (i, child) in helper.children.iter().enumerate().take(52) {
+            children[i] = *child;
+        }
+        
+        for (i, c) in helper.count.iter().enumerate().take(52) {
+            count[i] = *c;
+        }
+        
+        Ok(Node {
+            idx: helper.idx,
+            data: helper.data,
+            parent: helper.parent,
+            parent_child_idx: helper.parent_child_idx,
+            children,
+            count,
+        })
+    }
 }
 
 impl Node {
@@ -191,6 +293,7 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json;
 
     #[test]
     fn test_terminal_data_default() {
@@ -261,5 +364,100 @@ mod tests {
         let mut node = Node::new(1, 0, 0, NodeData::Chance);
         node.increment_count(0);
         assert_eq!(node.count[0], 1);
+    }
+
+    #[test]
+    fn test_node_serialization() {
+        let original_node = Node::new(5, 1, 2, NodeData::Chance);
+        
+        // Set some children and increment counts to test array serialization
+        let mut node = original_node.clone();
+        node.set_child(0, 10);
+        node.set_child(3, 15);
+        node.increment_count(0);
+        node.increment_count(0);
+        node.increment_count(3);
+        
+        // Serialize to JSON
+        let json = serde_json::to_string(&node).expect("Failed to serialize Node");
+        
+        // Deserialize from JSON
+        let deserialized_node: Node = serde_json::from_str(&json).expect("Failed to deserialize Node");
+        
+        // Verify node properties
+        assert_eq!(deserialized_node.idx, 5);
+        assert_eq!(deserialized_node.parent, Some(1));
+        assert_eq!(deserialized_node.parent_child_idx, Some(2));
+        assert!(matches!(deserialized_node.data, NodeData::Chance));
+        
+        // Verify children and count arrays were preserved
+        assert_eq!(deserialized_node.get_child(0), Some(10));
+        assert_eq!(deserialized_node.get_child(3), Some(15));
+        assert_eq!(deserialized_node.get_count(0), 2);
+        assert_eq!(deserialized_node.get_count(3), 1);
+    }
+    
+    #[test]
+    fn test_player_data_serialization() {
+        // Create PlayerData with a RegretMatcher
+        let mut regret_matcher = little_sorry::RegretMatcher::new(5).unwrap();
+        let player_data = PlayerData {
+            regret_matcher: Some(Box::new(regret_matcher)),
+            player_idx: 7,
+        };
+        
+        // Serialize to JSON
+        let json = serde_json::to_string(&player_data).expect("Failed to serialize PlayerData");
+        
+        // Deserialize from JSON
+        let deserialized_data: PlayerData = serde_json::from_str(&json).expect("Failed to deserialize PlayerData");
+        
+        // Verify player index was preserved
+        assert_eq!(deserialized_data.player_idx, 7);
+        
+        // Verify RegretMatcher was dropped during serialization (as expected)
+        assert!(deserialized_data.regret_matcher.is_none());
+    }
+    
+    #[test]
+    fn test_node_data_serialization() {
+        // Test each NodeData variant
+        let variants = vec![
+            NodeData::Root,
+            NodeData::Chance,
+            NodeData::Player(PlayerData {
+                regret_matcher: None,
+                player_idx: 3,
+            }),
+            NodeData::Terminal(TerminalData::new(42.5)),
+        ];
+        
+        for original_data in variants {
+            // Serialize to JSON
+            let json = serde_json::to_string(&original_data).expect("Failed to serialize NodeData");
+            
+            // Deserialize from JSON
+            let deserialized_data: NodeData = serde_json::from_str(&json).expect("Failed to deserialize NodeData");
+            
+            // Verify type is preserved
+            assert_eq!(original_data.is_root(), deserialized_data.is_root());
+            assert_eq!(original_data.is_chance(), deserialized_data.is_chance());
+            assert_eq!(original_data.is_player(), deserialized_data.is_player());
+            assert_eq!(original_data.is_terminal(), deserialized_data.is_terminal());
+            
+            // For terminal data, also check the utility value
+            if let NodeData::Terminal(ref original_terminal) = original_data {
+                if let NodeData::Terminal(ref deserialized_terminal) = deserialized_data {
+                    assert_eq!(original_terminal.total_utility, deserialized_terminal.total_utility);
+                }
+            }
+            
+            // For player data, check the player index
+            if let NodeData::Player(ref original_player) = original_data {
+                if let NodeData::Player(ref deserialized_player) = deserialized_data {
+                    assert_eq!(original_player.player_idx, deserialized_player.player_idx);
+                }
+            }
+        }
     }
 }
